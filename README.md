@@ -20,5 +20,6 @@ URL=
 
 ``` zsh
 npm link // 将这个包注册到全局
-mdpicreplace file.md
+
+mdpicreplace file.md // 之后你就可以在任意文件夹下这样使用
 ```
