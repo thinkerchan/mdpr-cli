@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+<<<<<<< HEAD
+=======
+require('dotenv').config()
+>>>>>>> 7e16292 (bin)
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
@@ -12,11 +16,14 @@ const {
   URL
 } = process.env;
 
+<<<<<<< HEAD
 if (!(ACCESS_KEY && SECRET_KEY &&BUCKET&& URL)) {
   console.log('请检查环境变量是否正确')
   return;
 }
 
+=======
+>>>>>>> 7e16292 (bin)
 let fileName = argv._[0]
 if (!(argv._.length  && fileName.indexOf('.md')>-1)) {
   console.log('检查文件路径是否正确!')
@@ -75,7 +82,11 @@ function start() {
   Promise.all(
     imgUrls.map((imgUrl) => {
       const fileName = path.basename(imgUrl);
+<<<<<<< HEAD
       const filePath = path.join('images', fileName);
+=======
+      const filePath = path.join(tempDir, fileName);
+>>>>>>> 7e16292 (bin)
       return Promise.race([
         new Promise((resolve, reject) => {
 
@@ -83,7 +94,11 @@ function start() {
             clearTimeout(timeout);
             console.log(`Image ${imgUrl} download timeout.`);
             resolve();
+<<<<<<< HEAD
           }, 5000);
+=======
+          }, maxTime);
+>>>>>>> 7e16292 (bin)
 
           axios({
             url: imgUrl,
@@ -113,7 +128,11 @@ function start() {
           });
         }),
 
+<<<<<<< HEAD
         new Promise((resolve) => setTimeout(() => resolve(), 5000))
+=======
+        new Promise((resolve) => setTimeout(() => resolve(), maxTime))
+>>>>>>> 7e16292 (bin)
       ]);
     })
   ).then(() => {

@@ -19,5 +19,6 @@ URL=
 ## 使用
 
 ``` zsh
+npm link // 将这个包注册到全局
 mdpicreplace file.md
 ```
