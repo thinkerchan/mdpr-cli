@@ -1,131 +1,149 @@
 #!/usr/bin/env node
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
 const qiniu = require('qiniu');
-const argv = require('minimist')(process.argv.slice(2))
-const dirPath = path.resolve(__dirname,'.env');
+const minimist = require('minimist');
+const dotenv = require('dotenv');
 
-require('dotenv').config({
-  path: dirPath
-})
+async function main() {
+  const argv = minimist(process.argv.slice(2));
+  const config = await loadConfig();
 
-const {
-  ACCESS_KEY,
-  SECRET_KEY,
-  BUCKET,
-  URL
-} = process.env;
+  if (!config) {
+    await promptForConfig();
+    return;
+  }
 
-if (!(ACCESS_KEY && SECRET_KEY &&BUCKET&& URL)) {
-  console.log('请检查环境变量是否正确')
-  return;
+  const { ACCESS_KEY, SECRET_KEY, BUCKET, URL } = config;
+
+  const fileName = argv._[0];
+  if (!fileName || !fileName.endsWith('.md')) {
+    console.log('Please provide a valid Markdown file path.');
+    return;
+  }
+
+  const mdPath = path.resolve(process.cwd(), fileName);
+  if (!await fileExists(mdPath)) {
+    console.log(`File: ${fileName} does not exist!`);
+    return;
+  }
+
+  const mdContent = await fs.readFile(mdPath, 'utf-8');
+  const imgUrls = extractImageUrls(mdContent);
+
+  console.log('Image URLs:', imgUrls);
+
+  const qiniuUploader = createQiniuUploader(ACCESS_KEY, SECRET_KEY, BUCKET);
+  const updatedContent = await processImages(mdContent, imgUrls, URL, qiniuUploader);
+
+  await fs.writeFile(mdPath, updatedContent, 'utf-8');
+  console.log('All images have been uploaded and links have been replaced.');
 }
 
-let fileName = argv._[0]
-if (!(argv._.length  && fileName.indexOf('.md')>-1)) {
-  console.log('检查文件路径是否正确!')
-  return
+async function loadConfig() {
+  const dirPath = path.resolve(__dirname, '.env');
+  const mdprConfigPath = path.resolve(process.env.HOME, '.mdpr');
+
+  if (await fileExists(dirPath)) {
+    dotenv.config({ path: dirPath });
+    return process.env;
+  } else if (await fileExists(mdprConfigPath)) {
+    return require(mdprConfigPath);
+  }
+
+  return null;
 }
 
-// 读取Markdown文件内容
-const mdPath = process.cwd()+'/'+fileName;
+async function promptForConfig() {
+  const readline = require('readline').createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
 
+  const config = {};
+  const questions = ['ACCESS_KEY', 'SECRET_KEY', 'BUCKET', 'URL'];
 
-if (!fs.existsSync(mdPath)) {
-  console.log(`文件: ${fileName} 不存在!`);
-  return;
+  for (const question of questions) {
+    config[question] = await new Promise(resolve => {
+      readline.question(`Please enter ${question}: `, resolve);
+    });
+  }
+
+  readline.close();
+
+  const mdprConfigPath = path.resolve(process.env.HOME, '.mdpr');
+  await fs.writeFile(mdprConfigPath, JSON.stringify(config));
+  console.log('Configuration saved.');
 }
 
-let mdContent = fs.readFileSync(mdPath, 'utf-8');
-
-// 匹配Markdown中的图片链接
-const imgReg = /\!\[.*?\]\((.*?)\)/g;
-const regex = /\!\[[^\]]*\]\(([^)]+)\)/g;
-let imgUrls = mdContent.match(imgReg);
-
-imgUrls = imgUrls.map((imgUrl) => {
-  return imgUrl.replace(regex, (match, p1) => {
-    return p1
-  })
-})
-
-console.log(`imgUrls`, imgUrls);
-
-const accessKey =  ACCESS_KEY
-const secretKey =  SECRET_KEY
-const bucket =  BUCKET
-const urlPrefix = URL
-
-const mac = new qiniu.auth.digest.Mac(accessKey, secretKey);
-const options = {
-  scope: bucket,
-};
-const putPolicy = new qiniu.rs.PutPolicy(options);
-const uploadToken = putPolicy.uploadToken(mac);
-const config = new qiniu.conf.Config();
-const formUploader = new qiniu.form_up.FormUploader(config);
-const putExtra = new qiniu.form_up.PutExtra();
-const maxTime = 5000;
-
-
-const tempDir = './cacheImgs';
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir);
+function extractImageUrls(content) {
+  const regex = /!\[.*?\]\((.*?)\)/g;
+  return Array.from(content.matchAll(regex), match => match[1]);
 }
 
+function createQiniuUploader(accessKey, secretKey, bucket) {
+  const mac = new qiniu.auth.digest.Mac(accessKey, secretKey);
+  const putPolicy = new qiniu.rs.PutPolicy({ scope: bucket });
+  const uploadToken = putPolicy.uploadToken(mac);
+  const config = new qiniu.conf.Config();
+  const formUploader = new qiniu.form_up.FormUploader(config);
+  const putExtra = new qiniu.form_up.PutExtra();
 
-function start() {
-  // 遍历图片链接，下载图片并上传到七牛云存储
-  Promise.all(
-    imgUrls.map((imgUrl) => {
-      const fileName = path.basename(imgUrl);
-      const filePath = path.join(tempDir, fileName);
-      return Promise.race([
-        new Promise((resolve, reject) => {
+  return async function uploadToQiniu(filePath, key) {
+    return new Promise((resolve, reject) => {
+      formUploader.putFile(uploadToken, key, filePath, putExtra, (err, body, info) => {
+        if (err) reject(err);
+        else resolve(body);
+      });
+    });
+  };
+}
 
-          const timeout = setTimeout(() => {
-            clearTimeout(timeout);
-            console.log(`Image ${imgUrl} download timeout.`);
-            resolve();
-          }, maxTime);
+async function processImages(content, imgUrls, urlPrefix, uploader) {
+  const tempDir = path.resolve('./cacheImgs');
+  await fs.mkdir(tempDir, { recursive: true });
 
-          axios({
-            url: imgUrl,
-            responseType: 'stream',
-          }).then((response) => {
-            response.data
-              .pipe(fs.createWriteStream(filePath))
-              .on('finish', () => {
-                clearTimeout(timeout);
-                formUploader.putFile(uploadToken, fileName, filePath, putExtra, (err, body, info) => {
-                  if (err) {
-                    reject(err);
-                  } else {
-                    const imgLink = `${urlPrefix}/${body.key}`;
-                    mdContent = mdContent.replace(imgUrl, imgLink);
-                    resolve();
-                  }
-                });
-              })
-              .on('error', (err) => {
-                reject(err);
-              });
-          }).catch((err) => {
-            clearTimeout(timeout);
-            console.log(`Image ${imgUrl} download error: ${err}`);
-            resolve();
-          });
-        }),
+  for (const imgUrl of imgUrls) {
+    const fileName = path.basename(imgUrl);
+    const filePath = path.join(tempDir, fileName);
 
-        new Promise((resolve) => setTimeout(() => resolve(), maxTime))
-      ]);
-    })
-  ).then(() => {
-    fs.writeFileSync(mdPath, mdContent, 'utf-8');
-    console.log('All images have been uploaded and links have been replaced.');
-  }).catch((err) => {
-    console.error(err);
+    try {
+      await downloadImage(imgUrl, filePath);
+      const result = await uploader(filePath, fileName);
+      const newImgUrl = `${urlPrefix}/${result.key}`;
+      content = content.replace(imgUrl, newImgUrl);
+    } catch (error) {
+      console.error(`Error processing ${imgUrl}:`, error.message);
+    }
+  }
+
+  return content;
+}
+
+async function downloadImage(url, filePath) {
+  const response = await axios({
+    url,
+    responseType: 'stream',
+    timeout: 5000
+  });
+
+  const writer = fs.createWriteStream(filePath);
+  response.data.pipe(writer);
+
+  return new Promise((resolve, reject) => {
+    writer.on('finish', resolve);
+    writer.on('error', reject);
   });
 }
-start()
+
+async function fileExists(path) {
+  try {
+    await fs.access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+main().catch(console.error);
